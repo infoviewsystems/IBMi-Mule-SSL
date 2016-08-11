@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:vm="http://www.mulesoft.org/schema/mule/vm" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting"
+	xmlns:tls="http://www.mulesoft.org/schema/mule/tls" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:as400="http://www.mulesoft.org/schema/mule/as400"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/as400 http://www.mulesoft.org/schema/mule/as400/current/mule-as400.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd">
+	<spring:beans>
+		<spring:bean id="dataSource" name="dataSource"
+			class="org.apache.commons.dbcp2.BasicDataSource"
+			destroy-method="close">
+			<spring:property name="driverClassName"
+				value="com.ibm.as400.access.AS400JDBCDriver" />
+			<spring:property name="url" value="${DB.url}" />
+			<spring:property name="username" value="${DB.username}" />
+			<spring:property name="password" value="${DB.password}" />
+			<spring:property name="maxIdle" value="${DB.maxIdle}" />
+			<spring:property name="maxTotal" value="${DB.maxTotal}" />
+			<spring:property name="maxWaitMillis" value="${DB.maxWaitMillis}" />
+			<spring:property name="maxConnLifetimeMillis" value="${DB.maxConnLifetimeMillis}" /> <!-- Have to check this -->
+			<spring:property name="poolPreparedStatements" value="${DB.poolPreparedStatements}" />
+			<spring:property name="initialSize" value="${DB.initialSize}" />
+			<spring:property name="logExpiredConnections" value="${DB.logExpiredConnections}" />
+			<spring:property name="removeAbandonedOnBorrow"
+				value="${DB.removeAbandonedOnBorrow}" />
+			<spring:property name="removeAbandonedTimeout" value="${DB.removeAbandonedTimeout}" />
+			<spring:property name="testWhileIdle" value="${DB.testWhileIdle}" />
+			<spring:property name="testOnBorrow" value="${DB.testOnBorrow}" />
+			<spring:property name="testOnReturn" value="${DB.testOnReturn}" />
+			<spring:property name="validationQuery" value="${DB.validationQuery}" />
+			<!-- <spring:property name="validationInterval" value="${DB.password}"/> -->
+			<spring:property name="timeBetweenEvictionRunsMillis"
+				value="${DB.timeBetweenEvictionRunsMillis}" />
+			<spring:property name="minEvictableIdleTimeMillis"
+				value="${DB.minEvictableIdleTimeMillis}" />
+		</spring:bean>
+		<spring:bean id="SSLBean" name="SSLBean"
+			class="ibmissldemo.CustomTrustStore">
+			<spring:property name="pwd" value="truststorepassword" />
+			<spring:property name="path" value="${app.home}/truststore" />
+		</spring:bean>
+
+	</spring:beans>
+
+	<as400:config name="AS400__Configuration_type_strategy"
+		endpoint="${endpoint}" userid="${userid}" password="${password}"
+		doc:name="AS400: Configuration type strategy" libraryList="${libl}" secureConnection="true">
+		<as400:connection-pooling-profile
+			initialisationPolicy="INITIALISE_ALL" exhaustedAction="WHEN_EXHAUSTED_GROW" />
+
+	</as400:config>
+	<http:request-config name="HTTP_Request_Configuration"
+		host="api.fixer.io" doc:name="HTTP Request Configuration" port="80" />
+
+	<db:generic-config name="AS400DB" dataSource-ref="dataSource"
+		doc:name="Generic Database Configuration" >
+        <db:pooling-profile maxPoolSize="10" minPoolSize="5"/>
+    </db:generic-config>
+
+	<flow name="IBMiSSLDemoFlow" processingStrategy="queued-asynchronous">
+		<as400:read-data-queue config-ref="AS400__Configuration_type_strategy"
+			dtaq="${req.dtaq}" library="${library}" dtaqKey="''"
+			dtaqKeySearchType="GREATER_THAN_OR_EQUAL" doc:name="Listen for AS400 Requests" />
+		<logger
+			message="Transaction #[message.inboundProperties.'as400.dataqueue.key'] received from AS400"
+			level="INFO" doc:name="Logger" />
+		<set-variable variableName="correlationID"
+			value="#[message.inboundProperties.'as400.dataqueue.key']" doc:name="Save Trans ID" />
+		<db:select config-ref="AS400DB" doc:name="Get currency codes from AS400">
+			<db:parameterized-query><![CDATA[select fromCcy, toCcy from DEMO03IN where transID = #[flowVars.correlationID]]]></db:parameterized-query>
+		</db:select>
+		<logger
+			message="Transaction #[flowVars.correlationID] calling external service to get exchange rate from #[payload[0].FROMCCY] to #[payload[0].TOCCY]"
+			level="INFO" doc:name="Logger" />
+		<set-variable variableName="toCCY" value="#[payload[0].TOCCY]"
+			doc:name="Save target currency" />
+
+		<http:request config-ref="HTTP_Request_Configuration"
+			path="/latest" method="GET" doc:name="REST API Get Exchange Rate">
+			<http:request-builder>
+				<http:query-param paramName="symbols" value="#[payload[0].TOCCY]" />
+				<http:query-param paramName="base" value="#[payload[0].FROMCCY]" />
+			</http:request-builder>
+		</http:request>
+		<dw:transform-message doc:name="Transform Message"
+			metadata:id="a7ca778f-de9b-48ad-a0f0-80569031d3a8">
+			<dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+payload.rates[flowVars.toCCY] as :string]]></dw:set-payload>
+		</dw:transform-message>
+		<logger
+			message="Transaction #[flowVars.correlationID] exchange rate is #[payload]"
+			level="INFO" doc:name="Logger" />
+		<db:insert config-ref="AS400DB" doc:name="Save response to AS400">
+			<db:parameterized-query><![CDATA[INSERT INTO DEMO03OUT VALUES(#[flowVars.correlationID], 'SUCCESS', #[payload], '')]]></db:parameterized-query>
+		</db:insert>
+		<logger
+			message="Transaction #[flowVars.correlationID] exchange rate saved into Response Staging"
+			level="INFO" doc:name="Logger" />
+		<as400:write-data-queue config-ref="AS400__Configuration_type_strategy"
+			dtaq="${res.dtaq}" library="${library}" dqEntry="Status=OK;#[payload]"
+			doc:name="Write AS400 Response" dtaqKey="#[flowVars.correlationID]" />
+		<catch-exception-strategy doc:name="Catch Exception Strategy">
+			<logger message="Status=FAILED;#[exception]" level="ERROR"
+				doc:name="Logger" />
+			<as400:write-data-queue config-ref="AS400__Configuration_type_strategy"
+				dtaq="${res.dtaq}" library="${library}"
+				dqEntry="Status=FAILED;Errors while executing the flow" doc:name="AS400"
+				dtaqKey="#[flowVars.correlationID]" />
+		</catch-exception-strategy>
+
+	</flow>
+</mule>
